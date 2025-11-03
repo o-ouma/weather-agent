@@ -1,5 +1,8 @@
 import os
 import asyncio
+import urllib.request
+import urllib.parse
+import json
 from google.adk.agents import Agent
 from google.adk.models.lite_llm import LiteLlm
 from google.adk.sessions import InMemorySessionService
@@ -24,26 +27,40 @@ def get_weather(city: str) -> dict:
         dict: A dictionary containing the weather information
               Includes status key
     """
-    print(f"--- Tool: get_weather called for {city} city ---")
-    city_normalized = city.lower()
+    if not city or not city.strip():
+        return {"status": "error", "error_message": "City must be non-empty string."}
 
-    # mock weather data
-    mock_weather_data = {
-        "nairobi": {"status": "success", "report": "The weather in Nairobi is sunny with a temperature of 25 degrees Celsius"},
-        "new york": {"status": "success", "report": "The weather in New York is cloudy with a temperature of 15 degrees Celsius"},
-        "london": {"status": "success", "report": "The weather in London is rainy with a temperature of 20 degrees Celsius"},
-        "paris": {"status": "success", "report": "The weather in Paris is cloudy with a temperature of 10 degrees Celsius"},
-        "cape town": {"status": "success", "report": "The weather in Cape Town is cloudy with a temperature of 15 degrees Celsius"},
-    }
+    # wttr.in provides a simple json api at /{city}?format=j1
+    encoded_city = urllib.parse.quote(city)
+    url = f"https://wttr.in/{encoded_city}?format=j1"
 
-    if city_normalized in mock_weather_data:
-        return mock_weather_data[city_normalized]
-    else:
-        return {"status": "error", "error_message": f"Weather information for {city} is not available."}
+    try:
+        with urllib.request.urlopen(url, timeout=10) as response:
+            status = getattr(response, "status", None)
+            if status is not None and status != 200:
+                return {"status": "error", "error_message": f"Error fetching weather data: {status}."}
+            body = response.read().decode("utf-8")
+            data = json.loads(body)
+    except Exception as e:
+        return {"status": "error", "error_message": f"Error fetching weather data: {e}."}
 
-print(get_weather("nairobi"))
-print(get_weather("new york"))
+    # Parse the common fields from wttr.in response
+    try:
+        current = data.get("current_condition", [])[0]
+        temp_c = current.get("temp_C", None)
+        desc = current.get("weatherDesc", [{}])[0].get("value")
+        humidity = current.get("humidity", None)
+        feels_like_c = current.get("feelslike_C", None)
 
+        report = (
+            f"Weather in {city} is {desc}, temperature {temp_c}\u00b0c (feels like {feels_like_c}\u00b0c), humidity {humidity}%."
+        )
+
+        return {"status": "success", "report": report, "data": data}
+    except Exception as e:
+        return {"status": "error", "error_message": f"Error parsing weather data: {e}."}
+
+# Model specification
 GEMINI_AGENT_MODEL = os.environ.get("AGENT_MODEL")
 
 weather_agent = Agent(
@@ -55,7 +72,7 @@ weather_agent = Agent(
                 "use the 'get_weather' tool to find the information. "
                 "If the tool returns an error, inform the user politely. "
                 "If the tool is successful, present the weather report clearly.",
-    tools=[get_weather], # Pass the function directly
+    tools=[get_weather],
 )
 
 print(f"Agent '{weather_agent.name}' created with model '{weather_agent.model}'.")
